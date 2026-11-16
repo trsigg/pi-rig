@@ -1,0 +1,11 @@
+{
+  "jobs": {
+    "maxWaitSeconds": 300
+  },
+  "catchup": { "enabled": true },
+  "narration": { "enabled": true },
+  "prompt-stash": { "enabled": true },
+  "paste-expand": { "enabled": true },
+  "tree-compact": { "enabled": true },
+  "prompt-timing": { "enabled": true }
+}

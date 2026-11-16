@@ -10,6 +10,24 @@ pi install /path/to/pi-rig
 
 The six opt-in extensions below are disabled by default. Enable them individually in `rig.json`; each extension's README lists its setting.
 
+## Portable configuration
+
+`config/settings.json`, `config/rig.json` and `config/keybindings.json` are the shared source of truth. The supplied rig config enables all six opt-in extras. Keep machine-specific overrides in optional `settings.json` and `rig.json` files under `~/local-dotfiles/pi` (regular files or symlinks).
+
+Regenerate explicitly after editing either source; this is not a startup hook, core patch or reload extension:
+
+```sh
+node ~/pi-rig/scripts/install-config.mjs [--agent-dir PATH] [--local-dir PATH] [--dry-run] [--check]
+```
+
+The agent directory defaults to `$PI_CODING_AGENT_DIR`, otherwise `~/.pi/agent`; the local directory defaults to `~/local-dotfiles/pi`. Shared files are located relative to the installer, not the working directory. `--dry-run` reports whether changes are needed without writing; `--check` also exits 1 for drift (0 when current). Errors exit nonzero without printing configuration values.
+
+Local scalars win, objects merge recursively and ordinary arrays replace. Settings resource arrays (`packages`, `extensions`, `skills`, `prompts`, `themes`) concatenate shared first, local second, without deduplication. Relative resource paths resolve against the declaring file's **physical location** (after following source symlinks), not the symlink's directory. Package resource filters stay package-relative. Leading `~`, package references and URLs keep their meaning.
+
+The installer creates private regular `settings.json` and `rig.json` outputs, and links `keybindings.json` directly to the shared file (no local keybindings merge). It replaces existing output symlinks instead of writing through them. Changed outputs are backed up under the agent directory's private `config-backups/<unique-run>/`, including linked file contents and a manifest recording original symlink targets. An unchanged rerun makes no backup. Backups may contain sensitive local settings; do not publish them.
+
+Generated settings and rig files are **not canonical**. Pi settings UI, `/rig` and runtime changes persist there until the next installer run; that run backs them up and reapplies shared/local sources. Move desired changes into the appropriate source before regenerating. There is no automatic reverse sync. Keybindings edits through the live symlink edit the shared source directly. Restart Pi after regenerating; the installer does not alter a running session.
+
 ## Extensions
 
 | Extension | What it is for | Spec |

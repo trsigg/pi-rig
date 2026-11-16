@@ -1,0 +1,22 @@
+{
+  "packages": [
+    "~/pi-rig",
+    "npm:pi-vim",
+    "npm:pi-btw",
+    "npm:pi-sticky-header"
+  ],
+  "theme": "dark",
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 50000
+  },
+  "steeringMode": "all",
+  "followUpMode": "all",
+  "transport": "auto",
+  "markdown": {
+    "mermaid": "streaming"
+  },
+  "tuiMode": "fullscreen",
+  "defaultThinkingLevel": "medium",
+  "cacheWarming": "idle"
+}
