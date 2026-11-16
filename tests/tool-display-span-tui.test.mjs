@@ -112,21 +112,21 @@ test("a steer delivered at the end of a turn splits the run", async (t) => {
 
 test("ask_user splits the run", async (t) => {
   const questions = [{ question: "Which?", header: "pick", options: [{ label: "Alpha" }, { label: "Beta" }] }];
-  const tui = await start(t, [[read("c1", "a.txt")], [call("c2", "ask_user", { questions })], [read("c3", "b.txt")], "Done."], {
+  const tui = await start(t, [[read("c1", "a.txt")], [call("c2", "ask_user", { message: "Pick one.", questions })], [read("c3", "b.txt")], "Done."], {
     extensions: [TOOL_DISPLAY, ASK_USER],
     tools: "read,ask_user",
   });
   await tui.waitForEvent("message_end", 4);
   await tui.waitForScreen("\n" + [
-    "", " go", "", "", " ⏺ Read 1 file", "", " ⏺ Ask User(pick)",
-    ...Array(32).fill(""),
+    "", " go", "", "", " ⏺ Read 1 file", "", " Pick one.", "", " ⏺ Ask User(pick)",
+    ...Array(30).fill(""),
     RULE, "Which?", "", "→ 1. Alpha", "  2. Beta", "  3. Type your own answer", "",
-    "  ↑↓ move · Enter choose · Esc cancel", RULE, "~/cwd", "↓34 R2 W19 CH10.5% 0.0%/128k (auto)                                    harness-1",
+    "  ↑↓ move · Enter choose · Esc cancel", RULE, "~/cwd", "↓39 R2 W19 CH10.5% 0.0%/128k (auto)                                    harness-1",
   ].join("\n"));
   tui.keys("Enter");
   await tui.waitForEvent("agent_end");
-  await tui.waitForScreen(rows("", " go", "", "", " ⏺ Read 1 file", "", " ⏺ Ask User(pick)", "   ⎿  pick: Alpha", "", " ⏺ Read 1 file", "", " Done.",
-    ...footer("↓42 R79 W75 CH77.3% 0.1%/128k (auto)                                   harness-1")));
+  await tui.waitForScreen(rows("", " go", "", "", " ⏺ Read 1 file", "", " Pick one.", "", " ⏺ Ask User(pick)", "   ⎿  pick: Alpha", "", " ⏺ Read 1 file", "", " Done.",
+    ...footer("↓47 R84 W81 CH77.8% 0.1%/128k (auto)                                   harness-1")));
 });
 
 test("thinking shown with Ctrl+T splits the run, and hiding it again joins it", async (t) => {

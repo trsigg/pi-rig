@@ -147,11 +147,11 @@ test("an editor swapped in after start gets the wrap", async (t) => {
 test("the ask_user panel in the editor slot is left alone", async (t) => {
   const RULE = "─".repeat(80);
   const questions = [{ question: "Which db?", header: "db", options: [{ label: "Alpha" }, { label: "Beta" }] }];
-  const call = [{ type: "toolCall", id: "c1", name: "ask_user", arguments: { questions } }];
+  const call = [{ type: "toolCall", id: "c1", name: "ask_user", arguments: { message: "Pick one.", questions } }];
   const tui = await start(t, { extensions: [ASK_USER, EXT], replies: [call, "done"] });
   tui.type("ask");
   tui.keys("Enter");
-  const above = ["", " ask", "", "", " ⏺ Ask User(db)", ""];
+  const above = ["", " ask", "", "", " Pick one.", "", " ⏺ Ask User(db)", ""];
   const panel = (body) => {
     const dock = [RULE, "Which db?", "", ...body, "", "  ↑↓ move · Enter choose · Esc cancel", RULE, "(footer)"];
     return "\n" + [...above, ...Array(24 - (above.length + dock.length)).fill(""), ...dock].join("\n");
@@ -162,7 +162,7 @@ test("the ask_user panel in the editor slot is left alone", async (t) => {
   await tui.waitForScreen(panel(["  1. Alpha", "  2. Beta", "→ 3. x /ab"]));
   tui.keys("Enter");
   await tui.waitForEvent("agent_end");
-  const done = ["", " ask", "", "", " ⏺ Ask User(db)", '   ⎿  db: "x /ab"', "", " done", ""];
+  const done = ["", " ask", "", "", " Pick one.", "", " ⏺ Ask User(db)", '   ⎿  db: "x /ab"', "", " done", ""];
   await tui.waitForScreen(screen(done, ""));
   tui.type("please /gr");
   await tui.waitForScreen(screen(done, "please /gr", GRI));
