@@ -154,7 +154,7 @@ async function start(t, args = {}, { ui = false, extensions = [], replies = [say
 test("each batch of lines is one notice with the description; stderr has its own log; the exit ends it", async (t) => {
   const s = await start(t);
   const errors = s.log.replace(/\.log$/, ".err.log");
-  assert.equal(s.result, `Started monitor ${s.id}; its output lines arrive as notices until it ends or after 300s. ${s.logs}`);
+  assert.equal(s.result, `Started monitor ${s.id}; its output lines arrive as notices until it ends or after 300s (quietly). ${s.logs}`);
   assert.equal(statSync(s.log).mode & 0o777, 0o600);
   await s.send("build 1 ok\nbuild 2 \x1b[31mfailed\x1b[0m\n");
   await s.send("build 3 ok\npartial");
@@ -255,26 +255,72 @@ test("20 s of flood, a 3 s gap, then 20 s more never floods", async (t) => {
 
 for (const [name, args, ui, seconds] of [
   ["the default deadline is 300 s", {}, false, 300],
-  ["without the UI the deadline is at most 600 s", { timeout: 1000 }, false, 600],
-  ["with the UI the deadline is at most 1,800 s", { timeout: 99999 }, true, 1800],
+  ["without the UI a deadline is not capped", { timeout: 1000 }, false, 1000],
+  ["with the UI a deadline is not capped", { timeout: 99999 }, true, 99999],
 ]) {
-  test(`${name}; at the deadline it stops as failed with code timeout`, async (t) => {
+  test(`${name}; at the deadline it completes without an end notice`, async (t) => {
     const s = await start(t, args, { ui });
-    assert.match(s.result, new RegExp(`after ${seconds}s\\.`));
+    assert.match(s.result, new RegExp(`after ${seconds}s \\(quietly\\)\\.`));
     const pgid = await s.pgid();
     s.clock.advance(seconds * 1000 - 1);
     await s.send("still here\n");
     assert.deepEqual(s.notices, [`${s.head}:\nstill here`]);
     s.clock.advance(1);
-    assert.equal(await s.ended(), `${s.head} failed [timeout]: it reached its ${seconds}s deadline. ${s.logs}`);
+    await until(() => fleet().get(s.id)?.status === "completed", "the monitor to end");
+    assert.equal(fleet().get(s.id).result, "deadline");
     await until(() => liveGroup(pgid).length === 0, "the command to be killed");
+    assert.deepEqual(s.notices, [`${s.head}:\nstill here`]);
   });
 }
+
+test("timeout 0 arms no deadline; jobs list shows only the owner's running monitors", async (t) => {
+  const s = await start(t, { timeout: 0 }, { ui: true, extensions: [path("../extensions/jobs/index.ts")] });
+  assert.match(s.result, /until its command exits or jobs stop\./);
+  assert.deepEqual(s.clock.pending().filter((ms) => ms > 2000), []);
+  const jobs = s.session.extensionRunner.getToolDefinition("jobs");
+  const own = { sessionManager: s.session.sessionManager };
+  let listed = textOf(await jobs.execute("l1", { action: "list" }, undefined, undefined, own));
+  assert.match(listed, /no deadline; no notices yet/);
+  await s.send("event one\n");
+  listed = textOf(await jobs.execute("l2", { action: "list" }, undefined, undefined, own));
+  assert.match(listed, new RegExp(`Monitor ${s.id} \\(watch builds\\) running for .*; no deadline; last notice .* ago\n  last line: event one`));
+  const other = { sessionManager: { getSessionId: () => "other" } };
+  assert.equal(textOf(await jobs.execute("l3", { action: "list" }, undefined, undefined, other)), "No jobs.");
+  const stopped = jobs.execute("l4", { action: "stop", id: s.id }, undefined, undefined, own);
+  s.clock.advance(800);
+  await settles(stopped, "jobs stop to finish");
+  assert.match(await s.ended(), /stopped\./);
+});
+
+test("min_interval holds intervening lines and releases one batch", async (t) => {
+  const s = await start(t, { min_interval: 60 });
+  await s.send("a\n");
+  s.clock.advance(0);
+  assert.deepEqual(s.notices, [`${s.head}:\na`]);
+  await s.send("b\n");
+  await s.send("c\n");
+  assert.equal(s.notices.length, 1);
+  s.clock.advance(60_000);
+  assert.deepEqual(s.notices, [`${s.head}:\na`, `${s.head}:\nb\nc`]);
+});
+
+test("deadline flushes held lines but sends no completion notice", async (t) => {
+  const s = await start(t, { timeout: 30, min_interval: 60 });
+  await s.send("a\n");
+  s.clock.advance(0);
+  await s.send("b\npartial");
+  s.clock.advance(30_000);
+  await until(() => fleet().get(s.id)?.status === "completed", "deadline");
+  assert.deepEqual(s.notices, [`${s.head}:\na`, `${s.head}:\nb\npartial`]);
+});
 
 test("a bad timeout is refused", async (t) => {
   const s = await start(t);
   const tool = s.session.extensionRunner.getToolDefinition("monitor");
-  await assert.rejects(tool.execute("c2", { command: "true", description: "x", timeout: 0 }, undefined, undefined, {}), { message: "timeout must be a positive number of seconds" });
+  for (const timeout of [-1, NaN, Infinity])
+    await assert.rejects(tool.execute("c2", { command: "true", description: "x", timeout }, undefined, undefined, {}), { message: "timeout must be 0 (no deadline) or a positive number of seconds" });
+  for (const min_interval of [-1, NaN, Infinity])
+    await assert.rejects(tool.execute("c2", { command: "true", description: "x", min_interval }, undefined, undefined, {}), { message: "min_interval must be 0 or a positive number of seconds" });
 });
 
 test("stop from FleetView sends SIGKILL to the group 800 ms after SIGTERM, with one notice", async (t) => {

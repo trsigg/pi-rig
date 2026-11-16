@@ -5,7 +5,7 @@ notices for the agent, with Claude Code's limits. Spec: #30. Ticket: #50.
 
 ## Tool
 
-`monitor({ command, description, timeout? })` starts the command and returns
+`monitor({ command, description, timeout?, min_interval? })` starts the command and returns
 its ID and log paths at once.
 
 - Each batch of standard output lines that arrive together is one notice,
@@ -16,8 +16,10 @@ its ID and log paths at once.
   so the drop count and the lines always fit.
 - Standard error goes to a separate log (`<id>.err.log`) and never becomes a
   notice.
-- `timeout` is the deadline in seconds: 300 by default, at most 1,800, or 600
-  without the UI. A larger value is clamped.
+- `timeout` is the deadline in seconds: 300 by default, any positive value,
+  or `0` for no deadline. Use `0` for long watches rather than re-arming them.
+- `min_interval` (seconds, default 0) batches intervening lines into at most
+  one notice per interval.
 
 ## Limits
 
@@ -28,7 +30,8 @@ its ID and log paths at once.
   within 2 s of the last, even as refills let a notice through. A flood lasting
   30 s stops the monitor as failed with code `flooded`. 2 s without a drop ends
   it.
-- **Deadline.** At its deadline the monitor stops as failed with code `timeout`.
+- **Deadline.** At its deadline the monitor completes quietly with result
+  `deadline`. Held lines are delivered, but no completion notice is sent.
 - **Output.** A monitor whose log passes 5 GB stops as failed with code
   `output`.
 - **Cap.** Monitors count toward jobs' `maxJobs` (default 16), shared with
@@ -42,7 +45,8 @@ its ID and log paths at once.
   SIGKILL until the group is empty.
 - Each monitor is a `monitor` row in FleetView. Opening it shows the live
   standard output log, and x on its row stops it with one notice. `jobs stop <id>`
-  stops it too.
+  stops it too. `jobs list` shows running monitors with age, deadline (or none),
+  last-notice time and last line.
 - A monitor belongs to its session: shutdown, `/reload` and a session switch
   stop it without a notice. If Pi exits without shutting down, an `exit`
   handler sends SIGKILL to every monitor group. If Pi is killed outright, the
