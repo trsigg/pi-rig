@@ -9,13 +9,15 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
   type Component,
+  type KeybindingsManager,
   type TUI,
 } from "@earendil-works/pi-tui";
 import { oneLine } from "../../shared/text/index.ts";
+import { findEditor } from "../../shared/tui/index.ts";
 
 export type Question = { question: string; header: string; options?: { label: string; description?: string }[]; multiSelect?: boolean };
 type Answer = { labels: string[]; text?: string };
-export type Outcome = { cancelled: true } | { cancelled: false; answers: (Answer | null)[]; note?: string };
+export type Outcome = { cancelled: true; timedOut?: number } | { cancelled: false; answers: (Answer | null)[]; note?: string };
 
 const TEXT_ROW = "Type your own answer";
 const NOTE_ROW = "Add a note to the agent (optional)";
@@ -24,7 +26,13 @@ const NOTE_ROW = "Add a note to the agent (optional)";
 export const answerText = (a: Answer | null): string =>
   a ? [...a.labels, ...(a.text ? [`"${a.text}"`] : [])].join(", ") : "skipped";
 
-export function panel(tui: TUI, questions: Question[], theme: Theme, render: () => void, done: (o: Outcome) => void): Component {
+type Field = Editor & { getMode?: () => string };
+
+export function panel(tui: TUI, questions: Question[], theme: Theme, render: () => void, done: (o: Outcome) => void, kb?: KeybindingsManager): Component {
+  const keys = kb ?? getKeybindings();
+  const cancelAction = () => (keys.getKeys("app.interrupt" as never).length ? "app.interrupt" : "tui.select.cancel");
+  const cancelKey = () =>
+    (keys.getKeys(cancelAction() as never) as string[]).filter((k) => k !== "ctrl+c").map((k) => k.replace(/(^|\+)([a-z])/g, (_m, p, c) => p + c.toUpperCase()).replace(/^Escape$/, "Esc")).join("/") || "Esc";
   const n = questions.length;
   const tabs = n > 1 ? n + 1 : 1; // the last tab is review
   // The free-text fields are Pi's own editor: long answers wrap and the box grows,
@@ -41,8 +49,11 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
       noMatch: (s: string) => theme.fg("muted", s),
     },
   };
-  const input = () => {
-    const editor = new Editor(tui, editorTheme);
+  // Modal editors expose getMode; their constructor keeps free-text editing consistent with the main editor.
+  const main = findEditor(tui) as { getMode?: unknown; constructor: new (...a: unknown[]) => Field } | undefined;
+  const Vim = kb && typeof main?.getMode === "function" ? main.constructor : undefined;
+  const input = (): Field => {
+    const editor: Field = Vim ? new Vim(tui, editorTheme, kb) : new Editor(tui, editorTheme);
     editor.disableSubmit = true;
     return editor;
   };
@@ -70,7 +81,7 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
   const advance = () => (n === 1 ? finish() : go(tab + 1));
 
   function questionKey(data: string) {
-    const kb = getKeybindings();
+    const kb = keys;
     const s = state[tab];
     const rows = opts(tab).length + 1;
     const onText = s.cursor === rows - 1;
@@ -103,7 +114,7 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
   // starts on the option's own row and the box grows below it. Pi's Editor always
   // draws its top/bottom borders; the panel uses none, so they are dropped here.
   // Unfocused, a field with text is one truncated line; empty, a dim hint.
-  const field = (editor: Editor, focused: boolean, lead: string, width: number, placeholder: string) => {
+  const field = (editor: Field, focused: boolean, lead: string, width: number, placeholder: string) => {
     editor.focused = focused;
     const v = oneLine(editor.getText());
     if (!focused) return [lead + (v ? truncateToWidth(v, width - visibleWidth(lead)) : theme.fg("dim", placeholder))];
@@ -112,6 +123,10 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
     const body = (rendered.length >= 2 ? rendered.slice(1, -1) : rendered).map((l) => l.trimEnd());
     const pad = " ".repeat(indent);
     return body.map((l, i) => (i === 0 ? lead + l : pad + l));
+  };
+  const modeTag = (e?: Field) => {
+    const m = e?.getMode?.();
+    return m ? theme.fg(m === "insert" ? "muted" : "accent", ` ${m.toUpperCase()}`) : "";
   };
   const pointer = (on: boolean) => (on ? theme.fg("accent", "→ ") : "  ");
 
@@ -137,7 +152,7 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
       lines.push(line + tick);
     }
     const choose = q.multiSelect ? "Space toggle · Enter confirm" : "Enter choose";
-    lines.push("", theme.fg("dim", `  ↑↓ move · ${choose}${n > 1 ? " · Tab/←→ switch" : ""} · Esc cancel`));
+    lines.push("", modeTag(s.cursor === k ? s.editor : undefined) + theme.fg("dim", `  ↑↓ move · ${choose}${n > 1 ? " · Tab/←→ switch" : ""} · ${cancelKey()} cancel`));
     return lines;
   }
 
@@ -152,7 +167,7 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
       lines.push(line);
     }
     lines.push(pointer(row === n + 1) + theme.fg(row === n + 1 ? "accent" : "text", "Submit answers"));
-    lines.push("", theme.fg("dim", "  Enter on an answer to change it · Tab/←→ switch · Esc cancel"));
+    lines.push("", modeTag(row === n ? note : undefined) + theme.fg("dim", `  Enter on an answer to change it · Tab/←→ switch · ${cancelKey()} cancel`));
     return lines;
   }
 
@@ -170,7 +185,7 @@ export function panel(tui: TUI, questions: Question[], theme: Theme, render: () 
       border.invalidate();
     },
     handleInput(data) {
-      if (getKeybindings().matches(data, "tui.select.cancel")) return done({ cancelled: true });
+      if (keys.matches(data, cancelAction() as never)) return done({ cancelled: true });
       const tabKey = matchesKey(data, "tab") || matchesKey(data, "shift+tab");
       if (n === 1 && tabKey) return; // no other tab, and never a literal tab in the text row
       if (n > 1 && (matchesKey(data, "tab") || (matchesKey(data, "right") && !editing()))) go(tab + 1);

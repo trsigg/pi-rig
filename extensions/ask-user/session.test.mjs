@@ -9,7 +9,7 @@ const EXTENSION = fileURLToPath(new URL("./index.ts", import.meta.url));
 const K = { up: "\x1b[A", down: "\x1b[B", right: "\x1b[C", left: "\x1b[D", enter: "\r", esc: "\x1b", tab: "\t", space: " " };
 
 const call = (questions) => [
-  fauxAssistantMessage(fauxToolCall("ask_user", { questions }), { stopReason: "toolUse" }),
+  fauxAssistantMessage(fauxToolCall("ask_user", { message: "Context first.", questions }), { stopReason: "toolUse" }),
   fauxAssistantMessage(fauxText("ok")),
 ];
 
@@ -157,6 +157,77 @@ test("removed fields such as allowSkip or preview are rejected", async (t) => {
     assert.equal(isError, true);
     assert.match(text, /Validation failed for tool "ask_user"/);
   }
+});
+
+test("message alone supplies visible context and stays in result details", async (t) => {
+  const session = await ask(t, [[Q("solo")]], [[K.enter]]);
+  assert.equal(session.messages.find((m) => m.role === "toolResult").details.message, "Context first.");
+});
+
+for (const [name, active, signature, expected] of [
+  ["visible narration", true, "narration", false],
+  ["hidden narration", false, "narration", true],
+  ["ordinary thinking", true, "thinking", true],
+]) {
+  test(`empty message accepts only visible text: ${name}`, async (t) => {
+    const { AssistantMessageComponent } = await import("@earendil-works/pi-coding-agent");
+    const proto = AssistantMessageComponent.prototype;
+    const key = Symbol.for("pi-rig.narration");
+    const previous = Object.getOwnPropertyDescriptor(proto, key);
+    if (active) proto[key] = { active: true };
+    else delete proto[key];
+    t.after(() => previous ? Object.defineProperty(proto, key, previous) : delete proto[key]);
+    const thinking = { type: "thinking", thinking: "Context.", thinkingSignature: Buffer.from(signature).toString("base64") };
+    const replies = [
+      fauxAssistantMessage([thinking, fauxToolCall("ask_user", { message: "", questions: [Q("solo")] })], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("ok")),
+    ];
+    const { session } = await scriptedSession(t, { replies, extensions: [EXTENSION], tools: ["ask_user"] });
+    let opened = 0;
+    await session.bindExtensions({ uiContext: new Proxy({ custom: () => (opened++, Promise.resolve({ cancelled: true })) }, { get: (o, k) => o[k] ?? (() => {}) }), mode: "tui" });
+    await session.prompt("ask");
+    const result = session.messages.find((m) => m.role === "toolResult");
+    assert.equal(result.isError, expected);
+    assert.equal(opened, expected ? 0 : 1);
+    if (expected) assert.match(JSON.stringify(result.content), /only 1 thinking block/);
+  });
+}
+
+test("empty message without visible text is refused before opening the panel", async (t) => {
+  const replies = [
+    fauxAssistantMessage(fauxToolCall("ask_user", { message: " ", questions: [Q("solo")] }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxText("ok")),
+  ];
+  const { session } = await scriptedSession(t, { replies, extensions: [EXTENSION], tools: ["ask_user"] });
+  let opened = 0;
+  await session.bindExtensions({ uiContext: new Proxy({ custom: () => { opened++; throw new Error("unexpected panel"); } }, { get: (o, k) => o[k] ?? (() => {}) }), mode: "tui" });
+  await session.prompt("ask");
+  assert.match(results(session)[0][1], /0 characters of visible text/);
+  assert.equal(results(session)[0][0], true);
+  assert.equal(opened, 0);
+});
+
+test("an unanswered panel times out and releases its timer", async (t) => {
+  const key = Symbol.for("pi-rig.timers");
+  const pending = new Set();
+  globalThis[key] = {
+    setTimeout: (fn, ms) => { const timer = { fn, ms }; pending.add(timer); return timer; },
+    clearTimeout: (timer) => pending.delete(timer),
+  };
+  t.after(() => delete globalThis[key]);
+  const session = await ask(t, [[Q("solo")]], [[]], { onOpen: () => {
+    assert.equal(pending.size, 1);
+    const [timer] = pending;
+    assert.equal(timer.ms, 20 * 60_000);
+    timer.fn();
+  } });
+  assert.match(results(session)[0][1], /^timed out: no answer after 20 min/);
+  assert.equal(pending.size, 0);
+});
+
+test("timeout result tells the agent to stop or continue on an assumption", async () => {
+  const { format } = await import("./index.ts");
+  assert.match(format([Q("solo")], { cancelled: true, timedOut: 20 }), /^timed out: no answer after 20 min\..*stop and say what you need; otherwise continue on a stated assumption/);
 });
 
 test("Tab does nothing when there is one question", async (t) => {

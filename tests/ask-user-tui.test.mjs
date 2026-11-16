@@ -16,7 +16,7 @@ const Q = (header, extra = {}) => ({
 async function ask(t, questions) {
   const tui = await startTui(t, {
     extensions: [EXTENSION],
-    replies: [[{ type: "toolCall", id: "c1", name: "ask_user", arguments: { questions } }], "done"],
+    replies: [[{ type: "toolCall", id: "c1", name: "ask_user", arguments: { message: "Some **context**.", questions } }], "done"],
   });
   t.after(() => assert.deepEqual(liveGroup(tui.pid), []));
   tui.type("ask");
@@ -36,7 +36,7 @@ const screen = (chat, dock) =>
 // The transcript rows for the turn that asked, and the finished transcript after the tool result.
 // In fullscreen the chat viewport renders the tool turn compactly: no blank row between the
 // call and its result and no trailing blank row (unlike the regular-mode transcript).
-const asked = (call) => ["", " ask", "", "", ` ⏺ ${call}`];
+const asked = (call) => ["", " ask", "", "", " Some context.", "", ` ⏺ ${call}`];
 const after = (call, result, footer) => {
   const [first, ...rest] = result.split("\n");
   const body = [`   ⎿  ${first}`, ...rest.map((l) => `      ${l}`)];
@@ -45,7 +45,7 @@ const after = (call, result, footer) => {
 
 test("one question: panel under the transcript, inline free text, submits on Enter", async (t) => {
   const tui = await ask(t, [Q("db")]);
-  const footer = "↓34 W2 CH0.0% 0.0%/128k (auto)                                         harness-1";
+  const footer = "↓42 W2 CH0.0% 0.0%/128k (auto)                                         harness-1";
   // While a question is up the panel is the dock's middle: border, panel, border, footer.
   const panel = (last, cursor) =>
     screen(asked("Ask User(db)"), [
@@ -69,12 +69,12 @@ test("one question: panel under the transcript, inline free text, submits on Ent
   await tui.waitForScreen(panel("→ 3. my own words", 1));
   tui.keys("Enter");
   await tui.waitForEvent("agent_end");
-  await tui.waitForScreen(after("Ask User(db)", 'db: "my own words"', "↓35 R2 W49 CH4.1% 0.0%/128k (auto)                                     harness-1"));
+  await tui.waitForScreen(after("Ask User(db)", 'db: "my own words"', "↓43 R2 W57 CH3.5% 0.0%/128k (auto)                                     harness-1"));
 });
 
 test("several questions: tabs, multi-select, skipping, review note and jumping back", async (t) => {
   const tui = await ask(t, [Q("db"), Q("cache", { multiSelect: true }), { question: "Anything else?", header: "extra" }]);
-  const footer = "↓80 W2 CH0.0% 0.1%/128k (auto)                                         harness-1";
+  const footer = "↓88 W2 CH0.0% 0.1%/128k (auto)                                         harness-1";
   const view = (tabs, body) =>
     screen(asked("Ask User(db, cache, extra)"), [RULE, ` ${tabs}`, "", ...body.split("\n"), RULE, CWD, footer]);
   const db = (tabs, pointer = "→ ", tick = "") =>
@@ -137,7 +137,7 @@ ${submit ? "→" : " "} Submit answers
   tui.keys("Enter");
   await tui.waitForEvent("agent_end");
   await tui.waitForScreen(
-    after("Ask User(db, cache, extra)", "db: Beta\ncache: Beta\nextra: skipped\nnote: keep it small", "↓81 R2 W105 CH1.9% 0.1%/128k (auto)                                    harness-1"),
+    after("Ask User(db, cache, extra)", "db: Beta\ncache: Beta\nextra: skipped\nnote: keep it small", "↓89 R2 W112 CH1.8% 0.1%/128k (auto)                                    harness-1"),
   );
 });
 
@@ -158,10 +158,10 @@ test("Esc cancels the panel", async (t) => {
       "  ↑↓ move · Enter choose · Tab/←→ switch · Esc cancel",
       RULE,
       CWD,
-      "↓64 W2 CH0.0% 0.1%/128k (auto)                                         harness-1",
+      "↓71 W2 CH0.0% 0.1%/128k (auto)                                         harness-1",
     ]),
   );
   tui.keys("Escape");
   await tui.waitForEvent("agent_end");
-  await tui.waitForScreen(after("Ask User(db, cache)", "cancelled", "↓65 R2 W77 CH2.6% 0.1%/128k (auto)                                     harness-1"));
+  await tui.waitForScreen(after("Ask User(db, cache)", "cancelled", "↓72 R2 W84 CH2.4% 0.1%/128k (auto)                                     harness-1"));
 });
