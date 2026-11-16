@@ -118,7 +118,10 @@ export function useHiddenThinking(owner: object, _piVersion: string = VERSION): 
   if (typeof proto.updateContent !== "function") return false;
   let patch: Patch | undefined = proto[MARK];
   if (!patch) {
-    const original = proto.updateContent;
+    // Narration must remain outermost so this renderer sees its placeholders as text.
+    const narration = proto[Symbol.for("pi-rig.narration")];
+    const underNarration = narration?.active && proto.updateContent === narration.wrapper;
+    const original = underNarration ? narration.original : proto.updateContent;
     const wrapper = function (this: any, message: any, ...rest: any[]) {
       const result = original.call(this, message, ...rest);
       if (!p.active) return result;
@@ -132,7 +135,8 @@ export function useHiddenThinking(owner: object, _piVersion: string = VERSION): 
     };
     const p: Patch = { original, wrapper, restyle, owners: new Set(), active: true };
     patch = proto[MARK] = p;
-    proto.updateContent = wrapper;
+    if (underNarration) narration.original = wrapper;
+    else proto.updateContent = wrapper;
   }
   // A /reload loads this module again while another session still holds the patch:
   // the live wrapper runs the newest code.
@@ -151,4 +155,8 @@ export function releaseHiddenThinking(owner: object): void {
   patch.active = false;
   delete proto[MARK];
   if (proto.updateContent === patch.wrapper) proto.updateContent = patch.original;
+  else {
+    const narration = proto[Symbol.for("pi-rig.narration")];
+    if (narration?.original === patch.wrapper) narration.original = patch.original;
+  }
 }

@@ -1,0 +1,11 @@
+{
+  "gap_threshold_min": 20,
+  "caught_up_tolerance_chars": 3000,
+  "net_rate_chars_per_min": {
+    "median": 472.5596705735091,
+    "p10": 163.82452197293512,
+    "p90": 2101.3723204078533
+  },
+  "online": { "tau_min": 80, "clip": [0.5, 2] },
+  "breaks": { "threshold_excess_min": 5, "typical_read_min": 1.0771234430076189 }
+}
