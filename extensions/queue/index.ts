@@ -2,20 +2,35 @@
 // submissions made while the agent works are held here, shown above Pi's own editor,
 // edited in that editor, and handed to Pi with its own delivery rules.
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Spacer, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { fleet, viewerTakes } from "../../shared/fleet/index.ts";
 import { oneLine } from "../../shared/text/index.ts"; // row text is user input
 import { editorFocused as mainEditorFocused } from "../../shared/tui/index.ts";
 
+/** Editing ends on Pi's interrupt keys, leaving Escape available to modal editors. */
+function interruptKeys(): string[] {
+  try {
+    const keys = JSON.parse(readFileSync(join(getAgentDir(), "keybindings.json"), "utf8"))["app.interrupt"];
+    if (Array.isArray(keys) && keys.length && keys.every((key) => typeof key === "string")) return keys;
+    if (typeof keys === "string" && keys) return [keys];
+  } catch {}
+  return ["escape"];
+}
+
 type Lane = "steer" | "followUp";
-type Row = { id: number; lane: Lane; text: string; images?: ImageContent[]; error?: string };
+type Row = { id: number; lane: Lane; text: string; images?: ImageContent[]; error?: string; alone?: boolean };
 
 const WIDGET = "queue";
 const ENTRY = "rig.queue"; // rows and draft saved across /reload
 // The token of the entry the last reload wrote, handed to the next runtime in this
 // process. An entry without it (a crash, a fork, a later session) is never restored.
 const RELOAD = Symbol.for("pi-rig.queue.reload");
+// Map<sessionId, (text) => boolean>: accepted messages go first and alone in that session's queue.
+// Callers use this registry instead of racing the queue with a second prompt while idle.
+const FRONT = Symbol.for("pi-rig.queue.front");
 
 /** `/compact [instructions]` or `/reload`, exact text only. */
 export const commandOf = (row: Pick<Row, "text" | "images">) => {
@@ -43,6 +58,7 @@ export default function (pi: ExtensionAPI) {
   let reloadRow: Row | undefined; // a /reload row waiting for Pi's main editor
   let reloadDraft: string | undefined; // editor text saved while a queued /reload runs
   let unsubscribeKeys: (() => void) | undefined;
+  let releaseFront: (() => void) | undefined;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const later = (fn: () => void) => {
     const t = setTimeout(() => (timers.delete(t), fn()), 0);
@@ -127,19 +143,24 @@ export default function (pi: ExtensionAPI) {
     draw();
   };
 
-  // Rows ahead of the first command row, in one lane; a command row holds everything behind it.
-  const ready = (lane: Lane) => {
+  // A command row holds everything behind it; otherwise preserve queue order within the chosen lanes.
+  const ready = (lane?: Lane) => {
     const stop = rows.findIndex((r) => commandOf(r));
-    return (stop < 0 ? rows : rows.slice(0, stop)).filter((r) => r.lane === lane);
+    return (stop < 0 ? rows : rows.slice(0, stop)).filter((r) => !lane || r.lane === lane);
   };
 
-  const deliver = (batch: Row[], deliverAs?: Lane) => {
+  const deliver = (all: Row[], deliverAs?: Lane) => {
+    // Slash rows must lead a message so Pi can expand them; front messages run alone.
+    const cut = all[0]?.alone ? 1 : all.findIndex((r, i) => i > 0 && (r.alone || r.text.trimStart().startsWith("/")));
+    const batch = cut < 0 ? all : all.slice(0, cut);
     rows = rows.filter((r) => !batch.includes(r));
     draw();
-    for (const r of batch) {
-      const content = r.images?.length ? [{ type: "text" as const, text: r.text }, ...r.images] : r.text;
-      pi.sendUserMessage(content, { ...(deliverAs && { deliverAs }), expandPromptTemplates: true });
-    }
+    if (!batch.length) return;
+    // One prompt avoids same-tick races while preserving the rows' text and attachments.
+    const text = batch.map((r) => r.text).join("\n\n");
+    const images = batch.flatMap((r) => r.images ?? []);
+    const content = images.length ? [{ type: "text" as const, text }, ...images] : text;
+    pi.sendUserMessage(content, { ...(deliverAs && { deliverAs }), expandPromptTemplates: true });
   };
 
   // A boundary drains the whole ready batch at once: queued messages arrive together.
@@ -150,7 +171,7 @@ export default function (pi: ExtensionAPI) {
 
   function dispatchIdle() {
     if (!ctx || paused || running || edit || !rows.length || !ctx.isIdle()) return;
-    const batch = ready("steer").length ? ready("steer") : ready("followUp");
+    const batch = ready();
     if (batch.length) return deliver(batch);
     runCommand(rows[0]);
   }
@@ -250,13 +271,15 @@ export default function (pi: ExtensionAPI) {
     return !!name && pi.getCommands().some((c) => c.source === "extension" && c.name === name);
   };
 
+  let interrupt = interruptKeys();
   const onKey = (data: string) => {
     if (!ctx || (!rows.length && !edit) || !editorFocused()) return;
     const handled = (() => {
       if (matchesKey(data, "alt+up")) return select(-1), true;
+      if (!edit && matchesKey(data, "up") && !ctx!.ui.getEditorText()) return select(-1), true;
       if (edit && matchesKey(data, "alt+down")) return select(1), true;
       if (edit && matchesKey(data, "alt+x")) return remove(), true;
-      if (edit && matchesKey(data, "escape")) {
+      if (edit && interrupt.some((key) => matchesKey(data, key))) {
         const row = endEdit(ctx!.ui.getEditorText());
         if (row) putBack(row);
         if (ctx!.isIdle()) dispatchIdle();
@@ -287,7 +310,27 @@ export default function (pi: ExtensionAPI) {
   };
 
   pi.on("session_start", (event, c) => {
+    interrupt = interruptKeys();
     ctx = c;
+    releaseFront?.();
+    const fronts: Map<string, (text: string) => boolean> =
+      (globalThis as any)[FRONT] instanceof Map ? (globalThis as any)[FRONT] : ((globalThis as any)[FRONT] = new Map());
+    const sessionId = c.sessionManager.getSessionId();
+    const front = (text: string) => {
+      if (fronts.get(sessionId) !== front || ctx?.sessionManager.getSessionId() !== sessionId) return false;
+      rows.unshift({ id: 0, lane: "steer", text, alone: true });
+      rows.forEach((r) => (r.id = nextId++)); // putBack sorts ids into queue order
+      paused = false;
+      draw();
+      later(dispatchIdle);
+      return true;
+    };
+    fronts.set(sessionId, front);
+    releaseFront = () => {
+      if (fronts.get(sessionId) !== front) return;
+      fronts.delete(sessionId);
+      if ((globalThis as any)[FRONT] === fronts && fronts.size === 0) delete (globalThis as any)[FRONT];
+    };
     const token = (globalThis as any)[RELOAD];
     delete (globalThis as any)[RELOAD];
     const saved = (c.sessionManager.getEntries() as any[]).findLast((e) => e.type === "custom" && e.customType === ENTRY)?.data;
@@ -313,6 +356,8 @@ export default function (pi: ExtensionAPI) {
       pi.appendEntry(ENTRY, { token, rows: savedRows, paused, draft: edit?.draft ?? reloadDraft });
       (globalThis as any)[RELOAD] = token;
     }
+    releaseFront?.();
+    releaseFront = undefined;
     for (const t of timers) clearTimeout(t);
     timers.clear();
     unsubscribeKeys?.();
@@ -361,7 +406,7 @@ export default function (pi: ExtensionAPI) {
     if (aborted(last, c)) return;
     // Pi decides on retry or compaction after agent_end; a follow-up now would hide that.
     if (last?.role === "assistant" && (last.stopReason === "error" || last.stopReason === "length")) return;
-    atBoundary(ready("steer").length ? "steer" : "followUp");
+    if (!paused && !running) deliver(ready(), "followUp");
   });
 
   pi.on("agent_settled", (_event, c) => {

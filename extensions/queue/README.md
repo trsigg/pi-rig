@@ -22,8 +22,10 @@ native queue:
   editor has focus.
   Typed while the agent is idle, they run at once as usual.
 
-Each group is delivered first in, first out, draining every ready row at the
-boundary at once. Skill commands in a queued message are
+Queued rows arrive as **one message**, joined by blank lines in queue order:
+steering at the next turn boundary; steering and follow-ups together after a
+run or interrupt. A row starting with `/` leads the next delivery so Pi can
+expand it as a skill or template. Skill commands in a queued message are
 expanded on delivery. Input from RPC drivers and extensions goes straight to Pi. While the fleet viewer shows an item, what you type steers that item instead
 (slash commands still queue here).
 
@@ -33,9 +35,12 @@ Above the editor and above TODOs and other widgets: "Steering" and "Follow-ups" 
 
 ## Keys
 
+- Up in an empty editor: same as Option+Up.
 - Option+Up: take the newest queued row out of the queue and load it into the editor. The original cannot be sent while you edit it. Press it again to put the current edit back and take the previous row. Option+Down moves the other way.
 - Enter: submit the edited row once, in its original steering or follow-up lane. Your previous draft returns to the editor. Option+X deletes the retrieved row.
-- Esc: abort the current turn. If you were editing, it puts the edited row back first. Queued steering starts a new turn as soon as the abort settles, or immediately if already idle; follow-ups run afterward.
+- Pi's interrupt keys (`app.interrupt` in keybindings.json, default Esc): abort the current turn. If you were editing, it puts the edited row back first. Queued steering and follow-ups start together as soon as the abort settles, or immediately if already idle.
+
+With interrupt remapped, Esc stays with the editor, for example to enter vim NORMAL mode.
 
 The keys are read only while Pi's editor has focus. With nothing queued,
 Option+Up keeps Pi's own behaviour.
@@ -44,7 +49,23 @@ Known limit: while you edit a row, Enter on `/compact`, `/reload` or an
 extension command saves it in place, and it runs when delivered. Other Pi
 built-in commands (such as `/model` or `/tree`) still run at once, because Pi
 handles them before any extension sees them. The retrieved row stays in the editor
-until you submit it or press Esc. Reloading while you edit saves the current text as a queued row and restores your earlier draft.
+until you submit it or use Pi's interrupt keys. Reloading while you edit saves the current text as a queued row and restores your earlier draft.
+
+## Extension caller contract
+
+`globalThis[Symbol.for("pi-rig.queue.front")]` is a map from
+`ctx.sessionManager.getSessionId()` to `(text: string) => boolean`.
+A `true` return accepts the text at the front of that session's queue,
+delivered first and alone. Clear the caller's pending text only on `true`.
+
+If the registry exists but the session has no route (or it returns `false`),
+keep the text pending; do not send a competing prompt. Only when the registry
+is absent may a caller fall back to `pi.sendUserMessage(text, { deliverAs:
+"followUp" })`. Look up the registry and route for each delivery attempt.
+
+Shutdown removes only that runtime's own registration. An older runtime
+cannot remove its replacement, and the last owner removes the empty registry
+so queue-less callers can fall back.
 
 ## Commands, tools, settings
 

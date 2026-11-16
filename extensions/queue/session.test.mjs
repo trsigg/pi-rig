@@ -2,9 +2,37 @@
 // Replies wait on gates the test opens, so input is queued while the agent works.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fauxAssistantMessage, fauxText, fauxToolCall, scriptedSession } from "../../tests/helpers/session.mjs";
 
 const EXT = new URL("./index.ts", import.meta.url).pathname;
+const FRONT = Symbol.for("pi-rig.queue.front");
+const frontFor = (session) => globalThis[FRONT]?.get(session.sessionManager.getSessionId());
+
+async function childSession(t, parent, sessionManager = SessionManager.inMemory(parent.cwd)) {
+  const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: parent.cwd, agentDir: parent.agentDir, settingsManager, additionalExtensionPaths: [EXT],
+    noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  const { session } = await createAgentSession({
+    cwd: parent.cwd, agentDir: parent.agentDir, model: parent.faux.getModel(), thinkingLevel: "off",
+    modelRuntime: parent.session.modelRuntime, resourceLoader, settingsManager, sessionManager,
+  });
+  let stopped = false;
+  const stop = async () => {
+    if (stopped) return;
+    stopped = true;
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    session.dispose();
+  };
+  t.after(stop);
+  await session.bindExtensions({});
+  return { session, stop };
+}
 
 function gate() {
   let open, reached;
@@ -13,7 +41,7 @@ function gate() {
   return { open, waiting, wait: () => (reached(), opened) };
 }
 
-const KEYS = { "alt+up": "\x1b[1;3A", "alt+down": "\x1b[1;3B", "alt+x": "\x1bx", escape: "\x1b", enter: "\r" };
+const KEYS = { up: "\x1b[A", "alt+c": "\x1bc", "alt+up": "\x1b[1;3A", "alt+down": "\x1b[1;3B", "alt+x": "\x1bx", escape: "\x1b", enter: "\r" };
 const say = (text) => fauxAssistantMessage(fauxText(text));
 const tool = () => fauxAssistantMessage(fauxToolCall("ls", { path: "." }), { stopReason: "toolUse" });
 
@@ -73,9 +101,9 @@ const transcript = (session) =>
           : [],
   );
 
-test("steering goes in at the next turn boundary, follow-ups after the run, each first in first out", async (t) => {
+test("steering goes at the turn boundary and follow-ups after the run, each lane as one ordered message", async (t) => {
   const g = gate();
-  const { session, state } = await start(t, [async () => (await g.wait(), tool()), say("turned"), say("done"), say("f1"), say("f2")]);
+  const { session, state } = await start(t, [async () => (await g.wait(), tool()), say("turned"), say("done")]);
   const run = session.prompt("go");
   await g.waiting;
   await session.prompt("s1", { streamingBehavior: "steer" });
@@ -89,16 +117,157 @@ test("steering goes in at the next turn boundary, follow-ups after the run, each
   assert.deepEqual(transcript(session), [
     "user: go",
     "assistant: [ls]",
-    "user: s1",
+    "user: s1\n\ns2",
     "assistant: turned",
-    "user: s2",
+    "user: f1\n\nf2",
     "assistant: done",
-    "user: f1",
-    "assistant: f1",
-    "user: f2",
-    "assistant: f2",
   ]);
   assert.deepEqual(state.widget, []);
+});
+
+test("front messages go first and alone while busy and start an idle session", { timeout: 5_000 }, async (t) => {
+  const idle = replyTo("idle front");
+  const g = gate();
+  const s = await start(t, [idle.reply, async () => (await g.wait(), tool()), say("front reply"), say("rest")]);
+  const front = frontFor(s.session);
+  assert.equal(front("idle front"), true);
+  await idle.requested;
+  await s.session.waitForIdle();
+  const run = s.session.prompt("go");
+  await g.waiting;
+  await s.session.prompt("follow-up", { streamingBehavior: "followUp" });
+  assert.equal(front("busy front"), true);
+  g.open();
+  await run;
+  await s.session.agent.waitForIdle();
+  assert.deepEqual(transcript(s.session).filter((line) => line.startsWith("user:")), ["user: idle front", "user: go", "user: busy front", "user: follow-up"]);
+});
+
+test("front registry isolates same-process sessions and cleans up the last owner", { timeout: 5_000 }, async (t) => {
+  const first = replyTo("parent first");
+  const second = replyTo("parent after child");
+  const parent = await start(t, [first.reply, second.reply]);
+  const parentFront = frontFor(parent.session);
+  const child = await childSession(t, parent);
+  const childFront = frontFor(child.session);
+  assert.notEqual(parentFront, childFront);
+  assert.equal(parentFront("parent first"), true);
+  await first.requested;
+  await parent.session.agent.waitForIdle();
+  assert.deepEqual(transcript(child.session), []);
+  await child.stop();
+  assert.equal(frontFor(child.session), undefined);
+  assert.equal(childFront("stale child"), false);
+  assert.equal(frontFor(parent.session), parentFront);
+  assert.equal(parentFront("parent after child"), true);
+  await second.requested;
+  await parent.session.agent.waitForIdle();
+  assert.deepEqual(transcript(parent.session).filter((line) => line.startsWith("user:")), ["user: parent first", "user: parent after child"]);
+  const fronts = globalThis[FRONT];
+  await parent.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  assert.equal(fronts.size, 0);
+  assert.equal(globalThis[FRONT], undefined);
+  assert.equal(parentFront("stale parent"), false);
+});
+
+test("callers keep pending text without their route and fall back only with no registry", async (t) => {
+  const accepted = replyTo("accepted");
+  const parent = await start(t, [accepted.reply]);
+  let pending = "pending";
+  const sent = [];
+  const attempt = (session) => {
+    const registry = globalThis[FRONT];
+    if (registry) {
+      const front = registry instanceof Map ? registry.get(session.sessionManager.getSessionId()) : undefined;
+      if (front?.(pending) === true) pending = "";
+      return;
+    }
+    sent.push(pending);
+    pending = "";
+  };
+  const child = await childSession(t, parent);
+  await child.stop();
+  attempt(child.session);
+  assert.equal(pending, "pending");
+  assert.deepEqual(sent, []);
+  pending = "accepted";
+  attempt(parent.session);
+  assert.equal(pending, "");
+  assert.deepEqual(sent, []);
+  await accepted.requested;
+  await parent.session.waitForIdle();
+  pending = "pending";
+  await parent.session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  attempt(child.session);
+  assert.equal(pending, "");
+  assert.deepEqual(sent, ["pending"]);
+});
+
+test("a stale runtime cannot remove the same session's replacement registration", { timeout: 5_000 }, async (t) => {
+  const next = replyTo("replacement");
+  const parent = await start(t, [next.reply]);
+  const staleFront = frontFor(parent.session);
+  const replacement = await childSession(t, parent, parent.session.sessionManager);
+  const front = frontFor(replacement.session);
+  assert.notEqual(staleFront, front);
+  assert.equal(staleFront("stale"), false);
+  await parent.session.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
+  assert.equal(frontFor(replacement.session), front);
+  assert.equal(front("replacement"), true);
+  await next.requested;
+  await replacement.session.agent.waitForIdle();
+  assert.deepEqual(transcript(replacement.session).filter((line) => line.startsWith("user:")), ["user: replacement"]);
+});
+
+test("stale shutdown cannot delete a newer registry, even when empty", async (t) => {
+  const parent = await start(t, []);
+  const oldMap = globalThis[FRONT];
+  const newerMap = new Map();
+  globalThis[FRONT] = newerMap;
+  t.after(() => { if (globalThis[FRONT] === newerMap) delete globalThis[FRONT]; });
+  await parent.session.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
+  assert.equal(oldMap.size, 0);
+  assert.equal(globalThis[FRONT], newerMap);
+  const replacement = await childSession(t, parent, parent.session.sessionManager);
+  const front = frontFor(replacement.session);
+  await parent.session.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
+  assert.equal(frontFor(replacement.session), front);
+  await replacement.stop();
+  assert.equal(globalThis[FRONT], undefined);
+});
+
+test("slash rows lead the next delivery instead of following plain text", async (t) => {
+  const g = gate();
+  const { session } = await start(t, [async () => (await g.wait(), tool()), say("a"), say("b")]);
+  const run = session.prompt("go");
+  await g.waiting;
+  await session.prompt("plain", { streamingBehavior: "steer" });
+  await session.prompt("/nosuchtemplate x", { streamingBehavior: "steer" });
+  g.open();
+  await run;
+  await session.agent.waitForIdle();
+  assert.deepEqual(transcript(session).filter((line) => line.startsWith("user:")), ["user: go", "user: plain", "user: /nosuchtemplate x"]);
+});
+
+test("Up retrieves only from an empty editor, and remapped interrupt ends the edit", async (t) => {
+  const g = gate();
+  const s = await start(t, [async () => (await g.wait(), tool()), say("reply")]);
+  writeFileSync(join(s.agentDir, "keybindings.json"), JSON.stringify({ "app.interrupt": "alt+c" }));
+  await s.session.reload();
+  const run = s.session.prompt("go");
+  await g.waiting;
+  await s.session.prompt("queued", { streamingBehavior: "steer" });
+  s.state.editor = "draft";
+  assert.equal(s.press("up"), false);
+  s.state.editor = "";
+  assert.equal(s.press("up"), true);
+  assert.equal(s.state.editor, "queued");
+  s.press("escape");
+  assert.equal(s.state.editor, "queued");
+  s.press("alt+c");
+  assert.equal(s.state.editor, "");
+  g.open();
+  await run;
 });
 
 test("retrieving, cycling and deleting queued rows preserves edits and the draft", async (t) => {
@@ -197,7 +366,7 @@ test("aborting a turn starts a new turn with its queued steer", async (t) => {
   assert.equal(transcript(session).at(-1), "assistant: steered");
 });
 
-test("abort sends queued steering on a new turn, then delivers the follow-up", async (t) => {
+test("abort sends queued steering and follow-ups together on a new turn", async (t) => {
   const g = gate();
   const { session, state } = await start(t, [async () => (await g.wait(), tool()), say("fresh"), say("s-reply"), say("f-reply")]);
   const run = session.prompt("go");
@@ -208,7 +377,7 @@ test("abort sends queued steering on a new turn, then delivers the follow-up", a
   g.open();
   await Promise.all([run, aborting]);
   await session.agent.waitForIdle?.();
-  assert.deepEqual(transcript(session).filter((line) => line.startsWith("user:")), ["user: go", "user: s1", "user: f1"]);
+  assert.deepEqual(transcript(session).filter((line) => line.startsWith("user:")), ["user: go", "user: s1\n\nf1"]);
   assert.deepEqual(state.widget, []);
 });
 
