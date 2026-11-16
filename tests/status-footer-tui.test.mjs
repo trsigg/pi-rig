@@ -1,5 +1,5 @@
 // The status footer in a real pi (spec #38, ADR 0001): two lines, git dirty
-// state after a tool writes a file, a fresh footer after /new, and truncation
+// state after a tool writes a file, a fresh footer after /new, and wrapping
 // at a narrow width. The
 // fixture makes cwd a clean git repo and serves a fixed quota feed.
 import { test } from "node:test";
@@ -82,13 +82,17 @@ test("two-line footer; the dirty mark appears after a tool writes a file", async
   ));
 });
 
-test("footer lines are truncated to a narrow terminal", async (t) => {
+test("a narrow terminal wraps the footer between segments", async (t) => {
   const tui = await start(t, { cols: 40 });
   await tui.waitForScreen(screen([""], [
     "─".repeat(40),
     "",
     "─".repeat(40),
-    "harness-1 off  │  in 0 out 0 cache --...",
-    "~/cwd main  │  Q claude 78%/41% · cod...",
+    "harness-1 off",
+    "in 0 out 0 cache -- $0.000",
+    "ctx [░░░░░░░░░░] 0%",
+    "~/cwd main",
+    "Q claude 78%/41% · codex 12%",
+    "TTFT -- · TPS --",
   ]));
 });

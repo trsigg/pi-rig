@@ -8,7 +8,11 @@ to agent runs.
 
 ## Footer
 
-TUI sessions only; it replaces Pi's footer.
+TUI sessions only; it replaces Pi's footer. Both logical rows share one line
+when wide enough; narrow terminals wrap between segments. A segment wider
+than the terminal is truncated. Other extensions' `ctx.ui.setStatus` texts
+follow the bottom row in key order, retaining colours but not control sequences
+or line breaks.
 
 ```
 model thinking  │  in 12k out 3.4k cache 81% $0.412  │  ctx [███░░░░░░░] 31%

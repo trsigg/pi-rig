@@ -13,7 +13,7 @@ const agentDir = mkdtempSync(join(tmpdir(), "pi-rig-status-footer-"));
 process.env.PI_CODING_AGENT_DIR = agentDir;
 test.after(() => rmSync(agentDir, { recursive: true, force: true }));
 
-const { footerLines, registerFooter, tokens, GIT_DEBOUNCE_MS } = await import("./footer.ts");
+const { footerLines, layoutFooter, registerFooter, tokens, GIT_DEBOUNCE_MS } = await import("./footer.ts");
 const { default: status } = await import("./index.ts");
 const { rigSettings } = await import("../../shared/settings/index.ts");
 
@@ -80,7 +80,7 @@ function fakePi() {
 // A session driving the handlers `register(pi)` installed. ctx.cwd differs from
 // the session's cwd on purpose: the footer must use the session's.
 function session(pi, { trusted = true, mode = "tui", branch = [], gitBranch = "main", cwd = "/repo", model = "m1" } = {}) {
-  const s = { renders: 0, getBranch: 0, contextUsage: 0, percent: 5, component: undefined, notes: [], gitBranch };
+  const s = { renders: 0, getBranch: 0, contextUsage: 0, percent: 5, component: undefined, notes: [], gitBranch, statuses: new Map() };
   const ctx = {
     mode,
     cwd: "/launched-here",
@@ -101,13 +101,14 @@ function session(pi, { trusted = true, mode = "tui", branch = [], gitBranch = "m
     const tui = { requestRender: () => s.renders++ };
     return factory(tui, THEME, {
       getGitBranch: () => s.gitBranch,
+      getExtensionStatuses: () => s.statuses,
       onBranchChange: (cb) => ((s.onBranchChange = cb), () => {}),
     });
   };
   s.emit = async (type, event = {}) => {
     for (const fn of pi.handlers[type] ?? []) await fn({ type, ...event }, ctx);
   };
-  s.lines = () => s.component.render(500);
+  s.lines = () => s.component.render(1000);
   return s;
 }
 
@@ -212,7 +213,7 @@ test("the per-width render cache never serves a stale line: model, thinking, bra
   const footer = registerFooter(pi, { gitDirty: async () => null });
   const s = session(pi, { trusted: false, model: "m1" });
   await s.emit("session_start");
-  // s.lines() always renders at width 500 (see the helper above): same width every
+  // s.lines() always renders at width 1000 (see the helper above): same width every
   // call, so only the cache key (width + version) can explain any change below.
 
   let before = s.lines()[0];
@@ -225,14 +226,14 @@ test("the per-width render cache never serves a stale line: model, thinking, bra
   await s.emit("thinking_level_select");
   assert.notEqual(s.lines()[0], before, "thinking level");
 
-  before = s.lines()[1];
+  before = s.lines()[0];
   s.gitBranch = "feature";
   s.fireBranchChange();
-  assert.notEqual(s.lines()[1], before, "branch");
+  assert.notEqual(s.lines()[0], before, "branch");
 
-  before = s.lines()[1];
+  before = s.lines()[0];
   footer.quotas({ providers: [{ id: "solo", quotas: [{ label: "x", percentRemaining: 5, status: "low" }] }] });
-  assert.notEqual(s.lines()[1], before, "quota");
+  assert.notEqual(s.lines()[0], before, "quota");
 
   before = s.lines()[0];
   await s.emit("message_end", { message: { role: "assistant", usage: usage(10, 5) } });
@@ -241,6 +242,31 @@ test("the per-width render cache never serves a stale line: model, thinking, bra
   // Same width, nothing changed since: the cache serves the identical array back.
   const same = s.lines();
   assert.equal(s.lines(), same);
+});
+
+test("footer combines wide rows and wraps narrow rows only between segments", () => {
+  const rows = [["alpha", "beta"], ["gamma", "delta"]];
+  assert.deepEqual(layoutFooter(rows, 40, " | ", (s) => s.length), ["alpha | beta | gamma | delta"]);
+  assert.deepEqual(layoutFooter(rows, 13, " | ", (s) => s.length), ["alpha | beta", "gamma | delta"]);
+  assert.deepEqual(layoutFooter(rows, 8, " | ", (s) => s.length), ["alpha", "beta", "gamma", "delta"]);
+  assert.deepEqual(layoutFooter([["oversized"]], 2, " | ", (s) => s.length), ["oversized"]);
+});
+
+test("extension statuses are sorted by key, sanitized with colours retained and bypass stale caches", async () => {
+  const pi = fakePi();
+  registerFooter(pi, { gitDirty: async () => null });
+  const s = session(pi, { trusted: false });
+  await s.emit("session_start");
+  const initial = s.component.render(1000);
+  assert.equal(initial.length, 1);
+  s.statuses.set("zeta", "Z\nlast");
+  s.statuses.set("alpha", "\x1b[2mA\x1b[22m \x1b]8;;x\x07first\t ");
+  const changed = s.component.render(1000);
+  assert.notEqual(changed, initial);
+  assert.ok(changed[0].endsWith("  │  \x1b[2mA\x1b[22m first  │  Z last"));
+  assert.equal(s.component.render(1000), changed);
+  s.statuses.delete("zeta");
+  assert.ok(s.component.render(1000)[0].endsWith("first"));
 });
 
 test("TTFT and TPS come from the last reply's timing", async () => {
@@ -253,11 +279,11 @@ test("TTFT and TPS come from the last reply's timing", async () => {
   await s.emit("before_provider_request", { payload: {} });
   now = 1250;
   await s.emit("message_update");
-  assert.match(s.lines()[1], /TTFT 250ms · TPS --$/);
+  assert.match(s.lines()[0], /TTFT 250ms · TPS --$/);
   now = 3250;
   await s.emit("message_update");
   await s.emit("message_end", { message: { role: "assistant", usage: usage(10, 100) } });
-  assert.match(s.lines()[1], /TTFT 250ms · TPS 50\.0$/);
+  assert.match(s.lines()[0], /TTFT 250ms · TPS 50\.0$/);
 });
 
 test("git: debounced after tool calls, never two at once, stopped by shutdown", async () => {
@@ -266,7 +292,7 @@ test("git: debounced after tool calls, never two at once, stopped by shutdown", 
   await settle(() => gits.length === 1, "checked once at start");
   gits[0].resolve(false);
   await flush();
-  assert.doesNotMatch(s.lines()[1], /\*/);
+  assert.doesNotMatch(s.lines()[0], /\*/);
 
   for (let i = 0; i < 3; i++) await s.emit("tool_execution_end");
   assert.equal(gits.length, 1, "nothing runs before the debounce");
@@ -281,7 +307,7 @@ test("git: debounced after tool calls, never two at once, stopped by shutdown", 
   const before = s.renders;
   gits[1].resolve(true);
   await settle(() => gits.length === 3, "the request made during the run runs after it");
-  assert.match(s.lines()[1], /main<\/accent><warning>\*<\/warning>/);
+  assert.match(s.lines()[0], /main<\/accent><warning>\*<\/warning>/);
   assert.ok(s.renders > before, "a result redraws the footer");
 
   await s.emit("tool_execution_end");
@@ -291,7 +317,7 @@ test("git: debounced after tool calls, never two at once, stopped by shutdown", 
   assert.ok(gits[2].signal.aborted, "shutdown aborts the running git");
   gits[2].resolve(false);
   await flush();
-  assert.match(s.lines()[1], /\*/, "an aborted result is dropped");
+  assert.match(s.lines()[0], /\*/, "an aborted result is dropped");
   await s.emit("tool_execution_end");
   await s.emit("session_shutdown");
   assert.equal(timers.pending.size, 0);
@@ -303,7 +329,7 @@ test("git runs in the session's cwd, the one the footer shows", async () => {
   await s.emit("session_start");
   await settle(() => gits.length === 1);
   assert.equal(gits[0].cwd, "/work/tree");
-  assert.match(s.lines()[1], /^\/work\/tree <accent>main/);
+  assert.match(s.lines()[0], /│  \/work\/tree <accent>main/);
   gits[0].resolve(false);
   await s.emit("session_shutdown");
 });
@@ -390,8 +416,8 @@ test("two sessions in one process keep their own timing and usage", async () => 
   await sa.emit("message_update");
   await sb.emit("message_update");
   await sa.emit("message_end", { message: { role: "assistant", usage: usage(7, 1) } });
-  assert.match(sa.lines()[1], /TTFT 4\.1s/);
-  assert.match(sb.lines()[1], /TTFT 100ms/);
+  assert.match(sa.lines()[0], /TTFT 4\.1s/);
+  assert.match(sb.lines()[0], /TTFT 100ms/);
   assert.match(sa.lines()[0], /in 7 out 1/);
   assert.match(sb.lines()[0], /in 0 out 0/);
 });
@@ -406,7 +432,7 @@ test("the footer mirrors the quota client: new feeds, failures, stale drops and 
   status(pi, { fetch: async (_url, init) => (fetches++, reply(init)), now: () => clock, quotaTimers, gitDirty: async () => null });
   const section = rigSettings(agentDir).sections().find((x) => x.name === "status");
   const s = session(pi, { trusted: false });
-  const quotas = () => s.lines()[1].split("  │  ").find((p) => p.startsWith("Q"));
+  const quotas = () => s.lines()[0].split("  │  ").find((p) => p.startsWith("Q"));
   const poll = async () => {
     const n = fetches;
     tick ? tick() : await s.emit("session_start"); // a TUI session start polls, then every tick
@@ -473,7 +499,7 @@ test("a hung quota fetch that times out drops a stale feed from the footer, as t
   const pi = fakePi();
   status(pi, { fetch, now: () => clock, quotaTimers: timers, gitDirty: async () => null });
   const s = session(pi, { trusted: false });
-  const quotas = () => s.lines()[1].split("  │  ").find((p) => p.startsWith("Q"));
+  const quotas = () => s.lines()[0].split("  │  ").find((p) => p.startsWith("Q"));
   try {
     await s.emit("session_start");
     await settle(() => quotas()?.startsWith("Q <text>claude"), "first feed shown");
@@ -499,7 +525,7 @@ test("a shut-down footer stops mirroring the quota client", async () => {
   const pi = fakePi();
   status(pi, { fetch: async () => reply(), now: () => clock, quotaTimers: { ...fakeTimers(), setInterval: () => 1, clearInterval() {} }, gitDirty: async () => null });
   const s = session(pi, { trusted: false });
-  const quotas = () => s.lines()[1].split("  │  ").find((p) => p.startsWith("Q"));
+  const quotas = () => s.lines()[0].split("  │  ").find((p) => p.startsWith("Q"));
   await s.emit("session_start");
   await settle(() => quotas()?.startsWith("Q <text>claude"), "first feed shown");
   const shown = quotas();
@@ -527,7 +553,7 @@ test("quota off: no tool, command, fetch or footer segment", async () => {
     await s.emit("session_start");
     await flush();
     assert.deepEqual([tools, Object.keys(pi.commands), fetches], [[], [], 0]);
-    assert.ok(!s.lines()[1].includes("Q "), "no quota segment");
+    assert.ok(!s.lines()[0].includes("Q "), "no quota segment");
     await s.emit("session_shutdown");
   } finally {
     section.reset("quota");

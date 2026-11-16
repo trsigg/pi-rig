@@ -5,7 +5,7 @@
 // checked asynchronously, debounced after tool calls, one git at a time.
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { blankRepoFilters, GIT_LIMITS, runGit } from "../../shared/git/index.ts"; // no repo code runs
-import { formatCount, oneLine } from "../../shared/text/index.ts"; // cwd, branch, model and provider ids come from outside
+import { formatCount, keepSgr, oneLine } from "../../shared/text/index.ts"; // cwd, branch, model and provider ids come from outside
 import type { Feed } from "./quota.ts";
 
 export const GIT_DEBOUNCE_MS = 300;
@@ -84,13 +84,19 @@ export interface Snapshot {
   /** undefined: nothing to show yet; null: QuotaBar is unreachable. */
   feed: Feed | null | undefined;
   perf?: { ttftMs: number; tps?: number };
+  statuses?: string[];
 }
 
-/** The footer's two lines, before truncation to the terminal width. */
+/** The footer's two logical rows; layoutFooter packs or wraps them for the terminal. */
 export function footerLines(s: Snapshot, theme: Pick<Theme, "fg">): string[] {
+  return footerSegments(s, theme).map((row) => row.join(footerSeparator(theme)));
+}
+
+export const footerSeparator = (theme: Pick<Theme, "fg">) => `  ${theme.fg("dim", "│")}  `;
+
+export function footerSegments(s: Snapshot, theme: Pick<Theme, "fg">): string[][] {
   const fg = theme.fg.bind(theme);
   const dim = (x: string) => fg("dim", x);
-  const sep = `  ${dim("│")}  `;
 
   const top: string[] = [];
   // An unknown level falls back to the "off" colour, as Pi's own thinking border does.
@@ -127,7 +133,30 @@ export function footerLines(s: Snapshot, theme: Pick<Theme, "fg">): string[] {
   const ttft = perf ? (perf.ttftMs < 1000 ? `${Math.round(perf.ttftMs)}ms` : `${(perf.ttftMs / 1000).toFixed(1)}s`) : "--";
   bottom.push(`${dim("TTFT")} ${ttft} ${dim("·")} ${dim("TPS")} ${perf?.tps !== undefined ? perf.tps.toFixed(1) : "--"}`);
 
-  return [top.join(sep), bottom.join(sep)];
+  for (const status of s.statuses ?? []) {
+    const line = keepSgr(status).replace(/[\x00-\x1a\x1c-\x1f]+/g, " ").replace(/ {2,}/g, " ").trim();
+    if (line) bottom.push(line);
+  }
+  return [top, bottom];
+}
+
+/** Combine rows when wide; otherwise wrap only between segments, leaving long segments for truncation. */
+export function layoutFooter(rows: string[][], width: number, sep: string, visibleWidth: (s: string) => number): string[] {
+  const all = rows.flat();
+  if (visibleWidth(all.join(sep)) <= width) return [all.join(sep)];
+  const lines: string[] = [];
+  for (const row of rows) {
+    let line = "";
+    for (const seg of row) {
+      const next = line ? line + sep + seg : seg;
+      if (line && visibleWidth(next) > width) {
+        lines.push(line);
+        line = seg;
+      } else line = next;
+    }
+    if (line) lines.push(line);
+  }
+  return lines;
 }
 
 const tilde = (cwd: string) => {
@@ -210,7 +239,7 @@ export function registerFooter(pi: ExtensionAPI, { timers = globalThis, now = Da
     if (live) void checkGit();
     const shownCwd = tilde(cwd);
     // Loaded here, not at the top: plain-node tests import this extension without pi-tui.
-    const { truncateToWidth } = await import("@earendil-works/pi-tui");
+    const { truncateToWidth, visibleWidth } = await import("@earendil-works/pi-tui");
     ctx.ui.setFooter((tui, theme, footerData) => {
       const draw = () => tui.requestRender();
       // requestRender alone would leave the cache below serving last frame's
@@ -233,10 +262,11 @@ export function registerFooter(pi: ExtensionAPI, { timers = globalThis, now = Da
           if (render === bump) render = () => {}; // a newer footer keeps its own
         },
         render: (width: number) => {
-          const key = `${width}:${version}`;
+          const statuses = [...(footerData.getExtensionStatuses?.() ?? [])].sort(([a], [b]) => a.localeCompare(b)).map(([, text]) => text);
+          const key = JSON.stringify([width, version, statuses]);
           if (cached && cacheKey === key) return cached;
           cacheKey = key;
-          return (cached = footerLines(
+          return (cached = layoutFooter(footerSegments(
             {
               model: ctx.model?.id,
               thinking: pi.getThinkingLevel(),
@@ -247,9 +277,10 @@ export function registerFooter(pi: ExtensionAPI, { timers = globalThis, now = Da
               dirty,
               feed,
               perf,
+              statuses,
             },
             theme,
-          ).map((line) => truncateToWidth(line, width)));
+          ), width, footerSeparator(theme), visibleWidth).map((line) => truncateToWidth(line, width)));
         },
       };
     });

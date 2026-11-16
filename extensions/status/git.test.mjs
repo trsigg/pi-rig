@@ -45,6 +45,8 @@ test("a repo's fsmonitor, hooks and clean filters never run", async (t) => {
     return path;
   };
   git("config", "core.fsmonitor", script("fsmonitor", "exit 1\n"));
+  // Keep the fixture's trap active even when the test host uses a global hooks path.
+  git("config", "core.hooksPath", join(cwd, ".git", "hooks"));
   writeFileSync(join(cwd, ".git", "hooks", "post-index-change"), `#!/bin/sh\ntouch '${join(marks, "hook")}'\n`);
   chmodSync(join(cwd, ".git", "hooks", "post-index-change"), 0o755);
   // The filter comes from an included file, so only a scope-aware check finds it.
