@@ -41,7 +41,8 @@ test("portable files contain only the intended shared defaults", () => {
     transport: "auto", markdown: { mermaid: "streaming" }, tuiMode: "fullscreen", defaultThinkingLevel: "medium", cacheWarming: "idle",
   });
   assert.deepEqual(read(join(root, "config/rig.json")), {
-    jobs: { maxWaitSeconds: 300 }, ...Object.fromEntries(["catchup", "narration", "prompt-stash", "paste-expand", "tree-compact", "prompt-timing"].map((key) => [key, { enabled: true }])),
+    jobs: { maxWaitSeconds: 300 }, ...Object.fromEntries(["catchup", "narration", "prompt-stash", "paste-expand", "tree-compact"].map((key) => [key, { enabled: true }])),
+    "prompt-timing": { enabled: false },
   });
   assert.deepEqual(read(join(root, "config/keybindings.json")), {
     "tui.editor.cursorLeft": ["left"], "app.models.save": ["alt+s"], "app.thinking.save": ["alt+s"], "app.session.toggleSort": ["alt+s"], "app.interrupt": ["alt+c"],
