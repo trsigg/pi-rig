@@ -56,4 +56,4 @@ Generated settings and rig files are **not canonical**. Pi settings UI, `/rig` a
 | [prompt-stash](extensions/prompt-stash/README.md) | Opt-in Ctrl+S prompt stack, restored after the next non-command submit | — |
 | [paste-expand](extensions/paste-expand/README.md) | Opt-in Alt+E expansion of paste markers in the editor | — |
 | [tree-compact](extensions/tree-compact/README.md) | Opt-in compact tree labels with times, model names and distinct custom-message colors | — |
-| [prompt-timing](extensions/prompt-timing/README.md) | Opt-in local diagnostic log of prompt display and handler latency | — |
+| [prompt-timing](extensions/prompt-timing/README.md) | Opt-in local diagnostic log of prompt display and handler latency; skips installation over legacy timing patches | — |

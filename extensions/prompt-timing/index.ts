@@ -8,6 +8,9 @@ import { rigSettings } from "../../shared/settings/index.ts";
 const MIN_MS = 20;
 const EVENTS = ["input", "before_agent_start", "agent_start", "turn_start", "context"];
 const PATCHED = Symbol.for("pi-rig.prompt-timing");
+// Compatibility identifiers for the irreversible legacy diagnostic patch.
+const LEGACY_PATCHED = Symbol.for("db-scripts.prompt-timing");
+const LEGACY_WRAPPED = Symbol.for("db-scripts.prompt-timing.wrapped");
 type Clock = { start?: number; spans: { name: string; ms: number }[] };
 type MethodPatch = { key: string; original: Function; wrapper: Function };
 type HandlerPatch = { list: Function[]; original: Function; wrapper: Function };
@@ -24,6 +27,8 @@ const writeLog = (line: string) => {
 
 /** Share a reversible diagnostic patch; clocks are isolated by ExtensionRunner instance. */
 export function installTiming(proto: any, owner: object, { now = () => performance.now(), log = writeLog } = {}): void {
+  // Never add instrumentation over a legacy patch that cannot be released.
+  if (proto[LEGACY_PATCHED]) return;
   const prev: State | undefined = proto[PATCHED];
   if (prev) { prev.owners.add(owner); return; }
   const state: State = { active: true, owners: new Set([owner]), methods: [], handlers: new Set() };
@@ -41,7 +46,7 @@ export function installTiming(proto: any, owner: object, { now = () => performan
         if (!list) continue;
         for (let i = 0; i < list.length; i++) {
           const original = list[i];
-          if (wrapped.has(original)) continue;
+          if (wrapped.has(original) || (original as any)[LEGACY_WRAPPED]) continue;
           const name = `${extName(ext.path)}:${event}`;
           const wrapper = async (...args: unknown[]) => {
             if (!state.active || clock.start === undefined) return original(...args);
@@ -50,6 +55,8 @@ export function installTiming(proto: any, owner: object, { now = () => performan
             try { return await original(...args); }
             finally { spans.push({ name, ms: now() - start }); }
           };
+          // A legacy diagnostic loaded later must also recognize this wrapper.
+          (wrapper as any)[LEGACY_WRAPPED] = true;
           wrapped.add(wrapper);
           list[i] = wrapper;
           state.handlers.add({ list, original, wrapper });
