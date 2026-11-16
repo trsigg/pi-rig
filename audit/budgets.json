@@ -11,12 +11,12 @@
     "todo_write": 150,
     "grep": 215,
     "find": 135,
-    "ask_user": 300,
+    "ask_user": 410,
     "subagent_spawn": 245,
     "subagent_message": 110,
     "subagent_stop": 76,
     "bash": 140,
     "jobs": 125,
-    "monitor": 195
+    "monitor": 290
   }
 }

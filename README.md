@@ -8,12 +8,14 @@ Customized Pi extensions maintained as a lightweight monorepo. Every extension i
 pi install /path/to/pi-rig
 ```
 
+The six opt-in extensions below are disabled by default. Enable them individually in `rig.json`; each extension's README lists its setting.
+
 ## Extensions
 
 | Extension | What it is for | Spec |
 |---|---|---|
 | [ponytail](extensions/ponytail/README.md) | Always-on guidance to build the simplest working solution, plus the `ponytail-audit` skill | [#37](https://github.com/aakshintala/pi-rig/issues/37) |
-| [status](extensions/status/README.md) | Two-line footer (model, usage, context, git, quotas, speed), plus quota headroom via `get_quotas` and `/quota` | [#38](https://github.com/aakshintala/pi-rig/issues/38) |
+| [status](extensions/status/README.md) | Width-aware footer (model, usage, context, git, quotas, speed and extension statuses), plus quota headroom via `get_quotas` and `/quota` | [#38](https://github.com/aakshintala/pi-rig/issues/38) |
 | [rig](extensions/rig/README.md) | `/rig` settings menu over every extension's `rig.json` section | [#32](https://github.com/aakshintala/pi-rig/issues/32) |
 | [fleet](extensions/fleet/README.md) | FleetView groups running shells, shows linked agent activity, clears finished work after 10 seconds, and provides a viewer, notices and Ctrl+B | [#29](https://github.com/aakshintala/pi-rig/issues/29) |
 | [tool-display](extensions/tool-display/README.md) | Groups tool calls into static live summaries (Pi's editor owns the spinner); Ctrl+O or a click reveals errors, while built-in `read`, `edit` and `write` show call lines and edit diffs | [#40](https://github.com/aakshintala/pi-rig/issues/40) |
@@ -31,3 +33,9 @@ pi install /path/to/pi-rig
 | [subagents](extensions/subagents/README.md) | Background subagents via `subagent_spawn`, `subagent_message` and `subagent_stop`, nested up to a depth cap, optionally forked or in their own git worktree, with results pushed as notices and a transcript in the viewer | [#26](https://github.com/aakshintala/pi-rig/issues/26) |
 | [jobs](extensions/jobs/README.md) | `bash` that moves long commands to the background, and `jobs` to list, wait on and stop them | [#30](https://github.com/aakshintala/pi-rig/issues/30) |
 | [monitor](extensions/monitor/README.md) | `monitor`: a watch command whose output lines reach the agent as rate-limited notices | [#30](https://github.com/aakshintala/pi-rig/issues/30) |
+| [catchup](extensions/catchup/README.md) | Opt-in footer estimate of unread assistant output and time to catch up | — |
+| [narration](extensions/narration/README.md) | Opt-in styled rendering of narration blocks without changing stored messages | — |
+| [prompt-stash](extensions/prompt-stash/README.md) | Opt-in Ctrl+S prompt stack, restored after the next non-command submit | — |
+| [paste-expand](extensions/paste-expand/README.md) | Opt-in Alt+E expansion of paste markers in the editor | — |
+| [tree-compact](extensions/tree-compact/README.md) | Opt-in compact tree labels with times, model names and distinct custom-message colors | — |
+| [prompt-timing](extensions/prompt-timing/README.md) | Opt-in local diagnostic log of prompt display and handler latency | — |
