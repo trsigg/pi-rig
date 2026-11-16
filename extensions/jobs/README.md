@@ -34,11 +34,12 @@ Spec: #30. Built in #48, #49 (guards and crash clean-up) and #51
     and it sees through `command`, `exec`, `env`, `nice`, `nohup`, `timeout`,
     `/bin/sleep`, `\sleep`, `$(...)` and backticks.
 - `jobs({ action, id?, timeout? })`:
-  - `list`: the session's jobs with status, running time, log path and command.
+  - `list`: the session's jobs with status, running time, log path and command,
+    plus running monitors with age, deadline, last-notice time and last line.
     Only the 20 most recent finished jobs are kept.
   - `wait`: returns when the job ends or after `timeout` seconds (default 30,
-    clamped to 10-3,600), with its status and last lines. Cancelling the wait
-    leaves the job running.
+    clamped to 10–`maxWaitSeconds`), with its status and last lines. Cancelling,
+    Ctrl+B or a queued steer ends the wait early and leaves the job running.
   - `stop`: SIGTERM to the job's process group, then SIGKILL 800 ms later if
     any of it is still alive. It also ends processes a finished job left
     running, such as `sleep 60 &`. Given a monitor's id, it stops that monitor.
@@ -101,6 +102,7 @@ Only the session that started a job can see, wait on or stop it.
 | Key | Default | Range | Does |
 |---|---|---|---|
 | `autoBackgroundSeconds` | 30 | 1-3,600 | Seconds before a running `bash` command moves to the background |
+| `maxWaitSeconds` | 3600 | 10–3,600 | Longest a `jobs wait` blocks; the job keeps running |
 | `maxJobs` | 16 | 1-64 | Most background jobs and monitors running at once |
 
 No commands. Ctrl+B is bound by the fleet extension.

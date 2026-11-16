@@ -336,6 +336,53 @@ test("jobs list keeps the 20 most recent finished jobs", async (t) => {
   assert.deepEqual([...list.matchAll(/^Job (\w{8})/gm)].map((m) => m[1]), ids.slice(1));
 });
 
+for (const [name, release] of [
+  ["Ctrl+B", () => fleet().backgroundAll()],
+  ["session-scoped steer", (owner) => fleet().backgroundAll(owner)],
+]) {
+  test(`${name} ends jobs wait without stopping the job or retaining foreground state`, async (t) => {
+    let id;
+    const s = await start(t, [
+      calls(bg(hold("go"))),
+      (context) => ((id = s.jobId(lastText(context))), calls(["jobs", { action: "wait", id }])()),
+      says("wait ended"),
+    ]);
+    const run = s.session.prompt("go");
+    await s.timers.waitFor(30_000);
+    assert.equal(fleet().foregrounds(), 1);
+    fleet().backgroundAll("another owner");
+    assert.equal(s.timers.has(30_000), true);
+    release(s.session.sessionManager.getSessionId());
+    await until(() => s.results().length >= 2, "the wait result");
+    assert.equal(fleet().get(id).status, "running");
+    assert.equal(fleet().foregrounds(), 0);
+    assert.equal(s.timers.has(30_000), false);
+    assert.match(s.results().at(-1)[1], new RegExp(`Job ${id} running`));
+    writeFileSync(join(s.cwd, "go"), "");
+    await run;
+    await until(() => fleet().get(id).status === "completed", "the job to finish");
+  });
+}
+
+test("maxWaitSeconds caps a wait and leaves the job running", async (t) => {
+  writeFileSync(rig.path, JSON.stringify({ jobs: { maxWaitSeconds: 12 } }));
+  t.after(() => rmSync(rig.path, { force: true }));
+  let id;
+  const s = await start(t, [
+    calls(bg(hold("go"))),
+    (context) => ((id = s.jobId(lastText(context))), calls(["jobs", { action: "wait", id, timeout: 100 }])()),
+    says("wait ended"),
+  ]);
+  const run = s.session.prompt("go");
+  await s.timers.fire(12_000);
+  await until(() => s.results().length >= 2, "the wait result");
+  assert.equal(fleet().get(id).status, "running");
+  assert.equal(fleet().foregrounds(), 0);
+  writeFileSync(join(s.cwd, "go"), "");
+  await run;
+  await until(() => fleet().get(id).status === "completed", "the job to finish");
+});
+
 test("cancelling a wait leaves the job running", async (t) => {
   let id;
   const s = await start(t, [

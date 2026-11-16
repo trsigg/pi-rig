@@ -94,6 +94,7 @@ const clean = (s: string) =>
 
 export default function (pi: ExtensionAPI) {
   const section = rigSettings(getAgentDir()).declare("jobs", [
+    { key: "maxWaitSeconds", type: "integer", min: 10, max: 3600, default: 3600, description: "Longest a jobs wait blocks before returning (the job keeps running)" },
     { key: "autoBackgroundSeconds", type: "integer", min: 1, max: 3600, default: 30, description: "Seconds before a running bash command moves to the background" },
     { key: "maxJobs", type: "integer", min: 1, max: 64, default: MAX_GROUPS, description: "Most background jobs and monitors running at once" },
   ]);
@@ -359,8 +360,15 @@ export default function (pi: ExtensionAPI) {
     },
     async execute(_id: string, p: { action: "list" | "wait" | "stop"; id?: string; timeout?: number }, signal: AbortSignal | undefined, _u: unknown, c: ExtensionContext) {
       if (p.action === "list") {
-        const mine = [...jobs.values()].filter((j) => j.bg && j.owner === c.sessionManager.getSessionId());
-        return reply(mine.length ? mine.map((j) => `${state(j)}\n  $ ${oneLine(j.command)}`).join("\n") : "No jobs.");
+        const me = c.sessionManager.getSessionId();
+        const mine = [...jobs.values()].filter((j) => j.bg && j.owner === me).map((j) => `${state(j)}\n  $ ${oneLine(j.command)}`);
+        for (const i of fleet().items()) {
+          if (i.kind !== "monitor" || i.owner !== me || i.status !== "running") continue;
+          const last = i.activity();
+          const info = (globalThis as any)[Symbol.for("pi-rig.monitor-info")]?.get(i.id)?.() ?? [];
+          mine.push(`Monitor ${i.id} (${oneLine(i.label)}) running for ${duration(now() - i.startedAt)}${info.length ? `; ${info.join("; ")}` : ""}${last ? `\n  last line: ${oneLine(last)}` : ""}`);
+        }
+        return reply(mine.length ? mine.join("\n") : "No jobs.");
       }
       // A monitor is a fleet row of kind monitor; stop ends it through the row.
       const row = p.id && !jobs.has(p.id) ? fleet().get(p.id) : undefined;
@@ -374,16 +382,19 @@ export default function (pi: ExtensionAPI) {
       try {
         if (p.action === "stop") await stop(j);
         else {
-          const seconds = Math.min(3600, Math.max(10, p.timeout ?? 30));
+          const seconds = Math.min(section.get("maxWaitSeconds") as number, 3600, Math.max(10, p.timeout ?? 30));
           // Cancelling ends only the wait: the job keeps running.
           await new Promise<void>((resolve, reject) => {
+            let unlist: (() => void) | undefined;
             const end = (error?: Error) => {
+              unlist?.();
               timers().clearTimeout(timer);
               signal?.removeEventListener("abort", cancel);
               if (error) reject(error);
               else resolve();
             };
             const cancel = () => end(new Error(`Wait cancelled. Job ${j.id} is still running.`));
+            unlist = fleet().foreground(c.sessionManager.getSessionId(), () => end());
             const timer = timers().setTimeout(() => end(), seconds * 1000);
             signal?.addEventListener("abort", cancel, { once: true });
             void j.done.then(() => end());
