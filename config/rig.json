@@ -7,5 +7,5 @@
   "prompt-stash": { "enabled": true },
   "paste-expand": { "enabled": true },
   "tree-compact": { "enabled": true },
-  "prompt-timing": { "enabled": true }
+  "prompt-timing": { "enabled": false }
 }
