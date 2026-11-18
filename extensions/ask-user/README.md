@@ -12,7 +12,7 @@ It replaces `pi-ask-user`.
 - Every question accepts a typed answer or skip. Multiple questions end on a review tab with an optional note.
 - Results contain `header: labels`, `header: "typed"` or `header: skipped`, plus `note: ...` when given. Cancellation returns `cancelled`.
 - An unanswered panel closes after `timeoutMinutes` and returns `timed out: …`, asking the agent to stop or continue on a stated assumption.
-- An empty `message` requires visible assistant text in the same message. Thinking does not count; narration counts only while the narration renderer is active.
+- Empty `message` strings are accepted; opening a panel does not depend on prior assistant prose, thinking or narration visibility.
 - Headers, questions and labels are normalized to plain single lines. Aborting the turn closes the panel.
 - Non-TUI calls fail with guidance to state an assumption and continue. Child sessions do not get the tool.
 

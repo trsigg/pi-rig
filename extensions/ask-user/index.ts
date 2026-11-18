@@ -1,5 +1,5 @@
 // ask_user: questions in a bottom panel with inline free text (spec #34).
-import { AssistantMessageComponent, getAgentDir, getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, visibleWidth } from "@earendil-works/pi-tui";
 import { rigSettings } from "../../shared/settings/index.ts";
 import { timers } from "../../shared/process-groups/index.ts";
@@ -69,22 +69,6 @@ export function format(questions: Question[], o: Outcome): string {
   return lines.join("\n");
 }
 
-// The narration renderer marks its active prototype wrapper with this shared state.
-const NARRATION_PATCH = Symbol.for("pi-rig.narration");
-const narrationShown = () => (AssistantMessageComponent.prototype as any)[NARRATION_PATCH]?.active === true;
-export function isNarration(p: any): boolean {
-  const sig = p?.type === "thinking" ? p.thinkingSignature : undefined;
-  return typeof sig === "string" && /^[A-Za-z0-9+/=_-]+$/.test(sig) && Buffer.from(sig, "base64").includes("narration");
-}
-
-/** Explain the visible-text failure without exposing the thinking contents. */
-export const noText = (thinkingBlocks: number, thinkingChars: number) =>
-  `ask_user refused: this message has 0 characters of visible text` +
-  (thinkingBlocks ? ` (only ${thinkingBlocks} thinking block${thinkingBlocks > 1 ? "s" : ""}, ${thinkingChars} characters, which the user never sees)` : "") +
-  ". Text written while thinking is not a reply, even when it is addressed to the user. " +
-  "End your thinking, write the explanation as a normal text reply, then call ask_user in that same message. " +
-  "Retrying the same way will be refused again.";
-
 const base = toolRenderers({
   title: "Ask User",
   arg: (p: any) => (p?.questions ?? []).map((q: any) => oneLine(q?.header ?? "")).filter(Boolean).join(", "),
@@ -110,17 +94,6 @@ const renderers = {
 };
 
 export default function (pi: ExtensionAPI) {
-  let hasText = false;
-  let thinking = { blocks: 0, chars: 0 };
-  pi.on("message_end", (event) => {
-    const m = event.message as any;
-    if (m?.role !== "assistant") return;
-    const parts: any[] = Array.isArray(m.content) ? m.content : [];
-    const shown = narrationShown();
-    hasText = parts.some((p) => (p.type === "text" && p.text?.trim()) || (shown && p.thinking?.trim() && isNarration(p)));
-    const t = parts.filter((p) => p.type === "thinking");
-    thinking = { blocks: t.length, chars: t.reduce((n, p) => n + (p.thinking?.length ?? 0), 0) };
-  });
   const section = rigSettings(getAgentDir()).declare("askUser", [
     { key: "timeoutMinutes", type: "integer", min: 0, max: 1440, default: 20, description: "Minutes an unanswered ask_user panel stays open before the agent is told it timed out (0 = never)" },
   ]);
@@ -138,14 +111,13 @@ export default function (pi: ExtensionAPI) {
     parameters: PARAMETERS as never,
     executionMode: "sequential",
     ...renderers,
-    async execute(_id, params: { message?: string; questions: Question[] }, signal, _onUpdate, ctx) {
+    async execute(_id, params: { message: string; questions: Question[] }, signal, _onUpdate, ctx) {
       const questions = params.questions.map(clean);
       const message = (params.message ?? "").trim();
       for (const q of questions) {
         if (visibleWidth(q.header) > 12) throw new Error(`header "${q.header}" is wider than 12 columns`);
       }
       if (ctx.mode !== "tui") throw new Error("No interactive user here. State your assumption and continue.");
-      if (!hasText && !message) throw new Error(noText(thinking.blocks, thinking.chars));
       const outcome: Outcome = signal?.aborted
         ? { cancelled: true }
         : await ctx.ui.custom<Outcome>((tui, theme, kb, close) => {

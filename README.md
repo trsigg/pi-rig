@@ -41,7 +41,7 @@ Generated settings and rig files are **not canonical**. Pi settings UI, `/rig` a
 | [todo](extensions/todo/README.md) | `todo_write` keeps a TODO list; a compact row above the editor expands on click or `/todos` | [#28](https://github.com/aakshintala/pi-rig/issues/28) |
 | [search](extensions/search/README.md) | `grep` and `find` served by Pi's built-ins, or the FFF native index when `search.disabled` is false | [#35](https://github.com/aakshintala/pi-rig/issues/35) |
 | [stamp](extensions/stamp/README.md) | One compact duration and completion-time line per settled agent run | [#36](https://github.com/aakshintala/pi-rig/issues/36) |
-| [ask-user](extensions/ask-user/README.md) | `ask_user`: questions in a bottom panel with inline free text | [#34](https://github.com/aakshintala/pi-rig/issues/34) |
+| [ask-user](extensions/ask-user/README.md) | `ask_user`: questions in a bottom panel with inline free text, no prior-prose gate | [#34](https://github.com/aakshintala/pi-rig/issues/34) |
 | [queue](extensions/queue/README.md) | Steering and follow-ups above other widgets; retrieve a row to edit, or abort and send queued steering | [#39](https://github.com/aakshintala/pi-rig/issues/39) |
 | [usage](extensions/usage/README.md) | `/usage`: cost and token usage across sessions, as a graph or a table per period | [#36](https://github.com/aakshintala/pi-rig/issues/36) |
 | [context](extensions/context/README.md) | `/context`: context usage map and injections inspector | [#36](https://github.com/aakshintala/pi-rig/issues/36) |

@@ -164,12 +164,12 @@ test("message alone supplies visible context and stays in result details", async
   assert.equal(session.messages.find((m) => m.role === "toolResult").details.message, "Context first.");
 });
 
-for (const [name, active, signature, expected] of [
-  ["visible narration", true, "narration", false],
-  ["hidden narration", false, "narration", true],
-  ["ordinary thinking", true, "thinking", true],
+for (const [name, active, signature] of [
+  ["visible narration", true, "narration"],
+  ["hidden narration", false, "narration"],
+  ["ordinary thinking", true, "thinking"],
 ]) {
-  test(`empty message accepts only visible text: ${name}`, async (t) => {
+  test(`empty message opens the panel with ${name}`, async (t) => {
     const { AssistantMessageComponent } = await import("@earendil-works/pi-coding-agent");
     const proto = AssistantMessageComponent.prototype;
     const key = Symbol.for("pi-rig.narration");
@@ -187,24 +187,39 @@ for (const [name, active, signature, expected] of [
     await session.bindExtensions({ uiContext: new Proxy({ custom: () => (opened++, Promise.resolve({ cancelled: true })) }, { get: (o, k) => o[k] ?? (() => {}) }), mode: "tui" });
     await session.prompt("ask");
     const result = session.messages.find((m) => m.role === "toolResult");
-    assert.equal(result.isError, expected);
-    assert.equal(opened, expected ? 0 : 1);
-    if (expected) assert.match(JSON.stringify(result.content), /only 1 thinking block/);
+    assert.equal(result.isError, false);
+    assert.equal(opened, 1);
+    assert.deepEqual(results(session), [[false, "cancelled"]]);
   });
 }
 
-test("empty message without visible text is refused before opening the panel", async (t) => {
+test("repeated empty messages without assistant prose open panels in the same turn", async (t) => {
   const replies = [
-    fauxAssistantMessage(fauxToolCall("ask_user", { message: " ", questions: [Q("solo")] }), { stopReason: "toolUse" }),
+    ...["", " ", ""].map((message) => fauxAssistantMessage(fauxToolCall("ask_user", { message, questions: [Q("solo")] }), { stopReason: "toolUse" })),
     fauxAssistantMessage(fauxText("ok")),
   ];
   const { session } = await scriptedSession(t, { replies, extensions: [EXTENSION], tools: ["ask_user"] });
-  let opened = 0;
-  await session.bindExtensions({ uiContext: new Proxy({ custom: () => { opened++; throw new Error("unexpected panel"); } }, { get: (o, k) => o[k] ?? (() => {}) }), mode: "tui" });
+  const frames = [];
+  await session.bindExtensions({ uiContext: fakeUi([[K.enter], [K.enter], [K.enter]], frames), mode: "tui" });
   await session.prompt("ask");
-  assert.match(results(session)[0][1], /0 characters of visible text/);
-  assert.equal(results(session)[0][0], true);
-  assert.equal(opened, 0);
+  assert.deepEqual(results(session), Array.from({ length: 3 }, () => [false, "solo: A"]));
+  assert.equal(frames.length, 3);
+});
+
+test("message remains a required string", async (t) => {
+  const replies = [
+    ...[{}, { message: {} }, { message: [] }].flatMap((args) => [
+      fauxAssistantMessage(fauxToolCall("ask_user", { ...args, questions: [Q("solo")] }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("ok")),
+    ]),
+  ];
+  const { session } = await scriptedSession(t, { replies, extensions: [EXTENSION], tools: ["ask_user"] });
+  for (let i = 0; i < 3; i++) await session.prompt("ask");
+  assert.equal(results(session).length, 3);
+  for (const [isError, text] of results(session)) {
+    assert.equal(isError, true);
+    assert.match(text, /Validation failed for tool "ask_user"/);
+  }
 });
 
 test("an unanswered panel times out and releases its timer", async (t) => {
